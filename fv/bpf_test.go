@@ -244,6 +244,7 @@ func describeBPFTests(opts ...bpfTestOpt) bool {
 				for i, felix := range felixes {
 					felix.Exec("iptables-save", "-c")
 					felix.Exec("ip", "r")
+					felix.Exec("ip", "route", "show", "cached")
 					felix.Exec("calico-bpf", "ipsets", "dump")
 					felix.Exec("calico-bpf", "routes", "dump")
 					felix.Exec("calico-bpf", "nat", "dump")
@@ -252,6 +253,7 @@ func describeBPFTests(opts ...bpfTestOpt) bool {
 					log.Infof("[%d]NATBackend: %+v", i, currBpfeps[i])
 					log.Infof("[%d]SendRecvMap: %+v", i, dumpSendRecvMap(felix))
 				}
+				externalClient.Exec("ip", "route", "show", "cached")
 			}
 		})
 
@@ -1060,6 +1062,17 @@ func describeBPFTests(opts ...bpfTestOpt) bool {
 								cc.ExpectSome(externalClient, TargetIP(felixes[1].IP), npPort)
 								cc.CheckConnectivity()
 							})
+							if testOpts.protocol == "tcp" {
+								It("should transfer 1500 bytes between external and w[0] via node1->node0 fwd", func() {
+									if testOpts.connTimeEnabled {
+										Skip("FIXME externalClient also does conntime balancing")
+									}
+
+									port := []uint16{npPort}
+									cc.ExpectDataTransfer(externalClient, TargetIP(felixes[1].IP), port, 1500, 1360)
+									cc.CheckConnectivity()
+								})
+							}
 						}
 
 						It("should have connectivity from external to w[0] via node0", func() {

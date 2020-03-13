@@ -244,6 +244,13 @@ func (w *Workload) CanConnectTo(ip, port, protocol string) *connectivity.Respons
 	return anyPort.CanConnectTo(ip, port, protocol)
 }
 
+func (w *Workload) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+	anyPort := Port{
+		Workload: w,
+	}
+	return anyPort.CanTransferData(ip, port, protocol, sendLen, recvLen)
+}
+
 func (w *Workload) Port(port uint16) *Port {
 	return &Port{
 		Workload: w,
@@ -485,7 +492,7 @@ type SpoofedWorkload struct {
 }
 
 func (s *SpoofedWorkload) CanConnectTo(ip, port, protocol string) *connectivity.Response {
-	return canConnectTo(s.Workload, ip, port, s.SpoofedSourceIP, "", protocol)
+	return canConnectTo(s.Workload, ip, port, s.SpoofedSourceIP, "", protocol, 0, 0)
 }
 
 type Port struct {
@@ -506,10 +513,17 @@ func (p *Port) SourceIPs() []string {
 
 func (p *Port) CanConnectTo(ip, port, protocol string) *connectivity.Response {
 	srcPort := strconv.Itoa(int(p.Port))
-	return canConnectTo(p.Workload, ip, port, "", srcPort, protocol)
+	return canConnectTo(p.Workload, ip, port, "", srcPort, protocol, 0, 0)
 }
 
-func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string) *connectivity.Response {
+func (p *Port) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+	srcPort := strconv.Itoa(int(p.Port))
+	return canConnectTo(p.Workload, ip, port, "", srcPort, protocol, sendLen, recvLen)
+}
+
+func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string,
+	sendLen, recvLen int) *connectivity.Response {
+
 	// Ensure that the host has the 'test-connection' binary.
 	w.C.EnsureBinary("test-connection")
 
@@ -530,6 +544,8 @@ func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string) *conne
 	// Run 'test-connection' to the target.
 	args := []string{
 		"exec", w.C.Name, "/test-connection", w.namespacePath, ip, port, "--protocol=" + protocol,
+		fmt.Sprintf("--sendlen=%d", sendLen),
+		fmt.Sprintf("--recvlen=%d", recvLen),
 	}
 	if srcIp != "" {
 		args = append(args, fmt.Sprintf("--source-ip=%s", srcIp))

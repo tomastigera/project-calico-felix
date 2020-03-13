@@ -46,28 +46,49 @@ type Checker struct {
 }
 
 func (c *Checker) ExpectSome(from ConnectionSource, to ConnectionTarget, explicitPort ...uint16) {
-	UnactivatedCheckers.Add(c)
-	if c.ReverseDirection {
-		from, to = to.(ConnectionSource), from.(ConnectionTarget)
-	}
-	c.expectations = append(c.expectations, Expectation{from, to.ToMatcher(explicitPort...), true, from.SourceIPs()})
+	c.expect(true, from, to, explicitPort)
 }
 
 func (c *Checker) ExpectSNAT(from ConnectionSource, srcIP string, to ConnectionTarget, explicitPort ...uint16) {
-	UnactivatedCheckers.Add(c)
 	c.CheckSNAT = true
-	if c.ReverseDirection {
-		from, to = to.(ConnectionSource), from.(ConnectionTarget)
-	}
-	c.expectations = append(c.expectations, Expectation{from, to.ToMatcher(explicitPort...), true, []string{srcIP}})
+	c.expect(true, from, to, explicitPort, ExpectWithSrcIPs(srcIP))
 }
 
 func (c *Checker) ExpectNone(from ConnectionSource, to ConnectionTarget, explicitPort ...uint16) {
+	c.expect(false, from, to, explicitPort)
+}
+
+// ExpectDataTransfer check if sendLen can be send to the dest and whether
+// recvLen of data can be received from the dest reliably
+func (c *Checker) ExpectDataTransfer(from TransferSource, to ConnectionTarget,
+	ports []uint16, sendLen, recvLen int) {
+	c.expect(true, from, to, ports, ExpectWithSendLen(sendLen), ExpectWithRecvLen(recvLen))
+}
+
+func (c *Checker) expect(connectivity bool, from ConnectionSource, to ConnectionTarget,
+	explicitPort []uint16, opts ...ExpectationOption) {
+
 	UnactivatedCheckers.Add(c)
 	if c.ReverseDirection {
 		from, to = to.(ConnectionSource), from.(ConnectionTarget)
 	}
-	c.expectations = append(c.expectations, Expectation{from, to.ToMatcher(explicitPort...), false, nil})
+
+	e := Expectation{
+		From:     from,
+		To:       to.ToMatcher(explicitPort...),
+		Expected: connectivity,
+	}
+
+	if connectivity {
+		// we expect the from.SourceIPs() by default
+		e.ExpSrcIPs = from.SourceIPs()
+	}
+
+	for _, option := range opts {
+		option(&e)
+	}
+
+	c.expectations = append(c.expectations, e)
 }
 
 func (c *Checker) ResetExpectations() {
@@ -92,7 +113,12 @@ func (c *Checker) ActualConnectivity() ([]*Response, []string) {
 			if c.Protocol != "" {
 				p = c.Protocol
 			}
-			responses[i] = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
+			if exp.sendLen > 0 || exp.recvLen > 0 {
+				responses[i] = exp.From.(TransferSource).
+					CanTransferData(exp.To.IP, exp.To.Port, p, exp.sendLen, exp.recvLen)
+			} else {
+				responses[i] = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
+			}
 			pretty[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, responses[i] != nil)
 			if c.CheckSNAT && responses[i] != nil {
 				srcIP := strings.Split(responses[i].SourceAddr, ":")[0]
@@ -184,8 +210,10 @@ func NewRequest() Request {
 }
 
 type Request struct {
-	Timestamp time.Time
-	ID        string
+	Timestamp    time.Time
+	ID           string
+	SendSize     int
+	ResponseSize int
 }
 
 func (req Request) Equal(oth Request) bool {
@@ -238,6 +266,12 @@ type ConnectionSource interface {
 	SourceIPs() []string
 }
 
+// TransferSource can connect and also can transfer data to/from
+type TransferSource interface {
+	ConnectionSource
+	CanTransferData(ip, port, protocol string, sendLen, recvLen int) *Response
+}
+
 func (m *Matcher) Match(actual interface{}) (success bool, err error) {
 	success = actual.(ConnectionSource).CanConnectTo(m.IP, m.Port, m.Protocol) != nil
 	return
@@ -255,11 +289,34 @@ func (m *Matcher) NegatedFailureMessage(actual interface{}) (message string) {
 	return
 }
 
+type ExpectationOption func(e *Expectation)
+
+func ExpectWithSrcIPs(ips ...string) ExpectationOption {
+	return func(e *Expectation) {
+		e.ExpSrcIPs = ips
+	}
+}
+
+func ExpectWithSendLen(l int) ExpectationOption {
+	return func(e *Expectation) {
+		e.sendLen = l
+	}
+}
+
+func ExpectWithRecvLen(l int) ExpectationOption {
+	return func(e *Expectation) {
+		e.recvLen = l
+	}
+}
+
 type Expectation struct {
 	From      ConnectionSource // Workload or Container
 	To        *Matcher         // Workload or IP, + port
 	Expected  bool
 	ExpSrcIPs []string
+
+	sendLen int
+	recvLen int
 }
 
 func (e Expectation) Matches(response *Response, checkSNAT bool) bool {

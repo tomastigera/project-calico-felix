@@ -553,7 +553,7 @@ func (c *Container) SourceIPs() []string {
 	return ips
 }
 
-func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+func (c *Container) checkConnectivity(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
 	// Ensure that the container has the 'test-connection' binary.
 	logCxt := log.WithField("container", c.Name)
 	logCxt.Debugf("Entering Container.CanConnectTo(%v,%v,%v)", ip, port, protocol)
@@ -561,7 +561,10 @@ func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Respon
 
 	// Run 'test-connection' to the target.
 	connectionCmd := utils.Command("docker", "exec", c.Name,
-		"/test-connection", "--protocol="+protocol, "-", ip, port)
+		"/test-connection", "--protocol="+protocol,
+		fmt.Sprintf("--sendlen=%d", sendLen),
+		fmt.Sprintf("--recvlen=%d", recvLen),
+		"-", ip, port)
 	outPipe, err := connectionCmd.StdoutPipe()
 	Expect(err).NotTo(HaveOccurred())
 	errPipe, err := connectionCmd.StderrPipe()
@@ -609,4 +612,12 @@ func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Respon
 		return &resp
 	}
 	return nil
+}
+
+func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+	return c.checkConnectivity(ip, port, protocol, 0, 0)
+}
+
+func (c *Container) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+	return c.checkConnectivity(ip, port, protocol, sendLen, recvLen)
 }
