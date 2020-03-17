@@ -16,10 +16,8 @@ package containers
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -554,64 +552,8 @@ func (c *Container) SourceIPs() []string {
 }
 
 func (c *Container) checkConnectivity(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
-	// Ensure that the container has the 'test-connection' binary.
-	logCxt := log.WithField("container", c.Name)
-	logCxt.Debugf("Entering Container.CanConnectTo(%v,%v,%v)", ip, port, protocol)
-	c.EnsureBinary("test-connection")
-
-	// Run 'test-connection' to the target.
-	connectionCmd := utils.Command("docker", "exec", c.Name,
-		"/test-connection", "--protocol="+protocol,
-		fmt.Sprintf("--sendlen=%d", sendLen),
-		fmt.Sprintf("--recvlen=%d", recvLen),
-		"-", ip, port)
-	outPipe, err := connectionCmd.StdoutPipe()
-	Expect(err).NotTo(HaveOccurred())
-	errPipe, err := connectionCmd.StderrPipe()
-	Expect(err).NotTo(HaveOccurred())
-	err = connectionCmd.Start()
-	Expect(err).NotTo(HaveOccurred())
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	var wOut, wErr []byte
-	var outErr, errErr error
-
-	go func() {
-		defer wg.Done()
-		wOut, outErr = ioutil.ReadAll(outPipe)
-	}()
-
-	go func() {
-		defer wg.Done()
-		wErr, errErr = ioutil.ReadAll(errPipe)
-	}()
-
-	wg.Wait()
-	Expect(outErr).NotTo(HaveOccurred())
-	Expect(errErr).NotTo(HaveOccurred())
-
-	err = connectionCmd.Wait()
-
-	logCxt.WithFields(log.Fields{
-		"stdout": string(wOut),
-		"stderr": string(wErr)}).WithError(err).Info("Connection test")
-
-	if err != nil {
-		return nil
-	}
-
-	r := regexp.MustCompile(`RESPONSE=(.*)\n`)
-	m := r.FindSubmatch(wOut)
-	if len(m) > 0 {
-		var resp connectivity.Response
-		err := json.Unmarshal(m[1], &resp)
-		if err != nil {
-			logCxt.WithError(err).WithField("output", string(wOut)).Panic("Failed to parse connection check response")
-		}
-		return &resp
-	}
-	return nil
+	c.EnsureBinary(connectivity.BinaryName)
+	return connectivity.Check(c.Name, "Connection test", ip, port, protocol, sendLen, recvLen)
 }
 
 func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Response {

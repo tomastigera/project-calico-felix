@@ -15,16 +15,21 @@
 package connectivity
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
+	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/types"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
+	"github.com/projectcalico/felix/fv/utils"
 	"github.com/projectcalico/libcalico-go/lib/set"
 
 	uuid "github.com/satori/go.uuid"
@@ -127,7 +132,7 @@ func (c *Checker) ActualConnectivity() ([]*Response, []string) {
 		}(i, exp)
 	}
 	wg.Wait()
-	logrus.Debug("Connectivity", responses)
+	log.Debug("Connectivity", responses)
 	return responses, pretty
 }
 
@@ -341,3 +346,129 @@ func (e Expectation) Matches(response *Response, checkSNAT bool) bool {
 }
 
 var UnactivatedCheckers = set.New()
+
+// CheckOption is the option format for Check()
+type CheckOption func(cmd *CheckCmd)
+
+// CheckCmd is exported solely for the sake of CheckOption and should not be use
+// on its own
+type CheckCmd struct {
+	ip       string
+	port     string
+	protocol string
+
+	ipSource   string
+	portSource string
+
+	sendLen int
+	recvLen int
+}
+
+// BinaryName is the name of the binry that the connectivity Check() executes
+const BinaryName = "test-connection"
+
+// Run executes the check command
+func (cmd *CheckCmd) run(cName string, logMsg string) *Response {
+	// Ensure that the container has the 'test-connection' binary.
+	logCxt := log.WithField("container", cName)
+	logCxt.Debugf("Entering connectivity.Check(%v,%v,%v,%v,%v)",
+		cmd.ip, cmd.port, cmd.protocol, cmd.sendLen, cmd.recvLen)
+
+	args := []string{"exec", cName,
+		"/test-connection", "--protocol=" + cmd.protocol,
+		fmt.Sprintf("--sendlen=%d", cmd.sendLen),
+		fmt.Sprintf("--recvlen=%d", cmd.recvLen),
+		"-", cmd.ip, cmd.port,
+	}
+
+	if cmd.ipSource != "" {
+		args = append(args, fmt.Sprintf("--source-ip=%s", cmd.ipSource))
+	}
+
+	if cmd.portSource != "" {
+		args = append(args, fmt.Sprintf("--source-port=%s", cmd.portSource))
+	}
+
+	// Run 'test-connection' to the target.
+	connectionCmd := utils.Command("docker", args...)
+
+	outPipe, err := connectionCmd.StdoutPipe()
+	Expect(err).NotTo(HaveOccurred())
+	errPipe, err := connectionCmd.StderrPipe()
+	Expect(err).NotTo(HaveOccurred())
+	err = connectionCmd.Start()
+	Expect(err).NotTo(HaveOccurred())
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var wOut, wErr []byte
+	var outErr, errErr error
+
+	go func() {
+		defer wg.Done()
+		wOut, outErr = ioutil.ReadAll(outPipe)
+	}()
+
+	go func() {
+		defer wg.Done()
+		wErr, errErr = ioutil.ReadAll(errPipe)
+	}()
+
+	wg.Wait()
+	Expect(outErr).NotTo(HaveOccurred())
+	Expect(errErr).NotTo(HaveOccurred())
+
+	err = connectionCmd.Wait()
+
+	logCxt.WithFields(log.Fields{
+		"stdout": string(wOut),
+		"stderr": string(wErr)}).WithError(err).Info(logMsg)
+
+	if err != nil {
+		return nil
+	}
+
+	r := regexp.MustCompile(`RESPONSE=(.*)\n`)
+	m := r.FindSubmatch(wOut)
+	if len(m) > 0 {
+		var resp Response
+		err := json.Unmarshal(m[1], &resp)
+		if err != nil {
+			logCxt.WithError(err).WithField("output", string(wOut)).Panic("Failed to parse connection check response")
+		}
+		return &resp
+	}
+	return nil
+}
+
+// WithSourceIP tell the check what source IP to use
+func WithSourceIP(ip string) CheckOption {
+	return func(c *CheckCmd) {
+		c.ipSource = ip
+	}
+}
+
+// WithSourcePort tell the check what source port to use
+func WithSourcePort(port string) CheckOption {
+	return func(c *CheckCmd) {
+		c.portSource = port
+	}
+}
+
+// Check executes the connectivity check
+func Check(cName, logMsg, ip, port, protocol string, sendLen, recvLen int, opts ...CheckOption) *Response {
+
+	cmd := CheckCmd{
+		ip:       ip,
+		port:     port,
+		protocol: protocol,
+		sendLen:  sendLen,
+		recvLen:  recvLen,
+	}
+
+	for _, opt := range opts {
+		opt(&cmd)
+	}
+
+	return cmd.run(cName, logMsg)
+}

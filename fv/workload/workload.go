@@ -16,10 +16,8 @@ package workload
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -524,9 +522,6 @@ func (p *Port) CanTransferData(ip, port, protocol string, sendLen, recvLen int) 
 func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string,
 	sendLen, recvLen int) *connectivity.Response {
 
-	// Ensure that the host has the 'test-connection' binary.
-	w.C.EnsureBinary("test-connection")
-
 	if protocol == "udp" || protocol == "sctp" {
 		// If this is a retry then we may have stale conntrack entries and we don't want those
 		// to influence the connectivity check.  UDP lacks a sequence number, so conntrack operates
@@ -541,54 +536,20 @@ func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string,
 
 	logMsg := "Connection test"
 
-	// Run 'test-connection' to the target.
-	args := []string{
-		"exec", w.C.Name, "/test-connection", w.namespacePath, ip, port, "--protocol=" + protocol,
-		fmt.Sprintf("--sendlen=%d", sendLen),
-		fmt.Sprintf("--recvlen=%d", recvLen),
-	}
+	var opts []connectivity.CheckOption
+
 	if srcIp != "" {
-		args = append(args, fmt.Sprintf("--source-ip=%s", srcIp))
 		logMsg += " (spoofed)"
+		opts = append(opts, connectivity.WithSourceIP(srcIp))
 	}
 	if srcPort != "" {
-		// If we are using a particular source port, fill it in.
-		args = append(args, fmt.Sprintf("--source-port=%s", srcPort))
 		logMsg += " (with source port)"
-	}
-	connectionCmd := utils.Command("docker", args...)
-	outPipe, err := connectionCmd.StdoutPipe()
-	Expect(err).NotTo(HaveOccurred())
-	errPipe, err := connectionCmd.StderrPipe()
-	Expect(err).NotTo(HaveOccurred())
-	err = connectionCmd.Start()
-	Expect(err).NotTo(HaveOccurred())
-
-	wOut, err := ioutil.ReadAll(outPipe)
-	Expect(err).NotTo(HaveOccurred())
-	wErr, err := ioutil.ReadAll(errPipe)
-	Expect(err).NotTo(HaveOccurred())
-	err = connectionCmd.Wait()
-
-	log.WithFields(log.Fields{
-		"stdout": string(wOut),
-		"stderr": string(wErr)}).WithError(err).Info(logMsg)
-
-	if err != nil {
-		return nil
+		opts = append(opts, connectivity.WithSourcePort(srcPort))
 	}
 
-	r := regexp.MustCompile(`RESPONSE=(.*)\n`)
-	m := r.FindSubmatch(wOut)
-	if len(m) > 0 {
-		var resp connectivity.Response
-		err := json.Unmarshal(m[1], &resp)
-		if err != nil {
-			log.WithError(err).WithField("output", string(wOut)).Panic("Failed to parse connection check response")
-		}
-		return &resp
-	}
-	return nil
+	w.C.EnsureBinary(connectivity.BinaryName)
+
+	return connectivity.Check(w.C.Name, logMsg, ip, port, protocol, sendLen, recvLen, opts...)
 }
 
 // ToMatcher implements the connectionTarget interface, allowing this port to be used as
