@@ -551,15 +551,15 @@ func (c *Container) SourceIPs() []string {
 	return ips
 }
 
-func (c *Container) checkConnectivity(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+func (c *Container) checkConnectivity(ip, port, protocol string, sendLen, recvLen int) *connectivity.Result {
 	c.EnsureBinary(connectivity.BinaryName)
 	return connectivity.Check(c.Name, "Connection test", ip, port, protocol, sendLen, recvLen)
 }
 
-func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+func (c *Container) CanConnectTo(ip, port, protocol string) *connectivity.Result {
 	return c.checkConnectivity(ip, port, protocol, 0, 0)
 }
 
-func (c *Container) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+func (c *Container) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Result {
 	return c.checkConnectivity(ip, port, protocol, sendLen, recvLen)
 }

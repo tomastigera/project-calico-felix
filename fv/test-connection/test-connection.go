@@ -229,7 +229,7 @@ func (t *try) Connect() error {
 	return nil
 }
 
-func (t *try) tcp(ls *loopState, localAddr, remoteAddr string) error {
+func (t *try) tcp(ls *loopState, localAddr, remoteAddr string) (err error) {
 	// Since we specify the source port rather than use an ephemeral port, if
 	// the SO_REUSEADDR and SO_REUSEPORT options are not set, when we make
 	// another call to this program, the original port is in post-close wait
@@ -245,13 +245,12 @@ func (t *try) tcp(ls *loopState, localAddr, remoteAddr string) error {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
-	mtu, err := utils.ConnMTU(conn.(utils.HasSyscallConn))
-	log.WithError(err).Infof("client start PMTU: %d", mtu)
-
-	defer func() {
-		mtu, err := utils.ConnMTU(conn.(utils.HasSyscallConn))
-		log.WithError(err).Infof("client end PMTU: %d", mtu)
-	}()
+	mtuPair := connectivity.MTUPair{}
+	mtuPair.Start, err = utils.ConnMTU(conn.(utils.HasSyscallConn))
+	if err != nil {
+		log.WithError(err).Error("Failed to read connection MTU")
+		return err
+	}
 
 	for {
 		req := connectivity.NewRequest()
@@ -277,7 +276,7 @@ func (t *try) tcp(ls *loopState, localAddr, remoteAddr string) error {
 				}
 				snd -= n
 				if err != nil {
-					log.Errorf("Writeing to connection failed. %d bytes too short\n", snd)
+					log.Errorf("Writing to connection failed. %d bytes too short\n", snd)
 					break
 				}
 			}
@@ -331,6 +330,18 @@ func (t *try) tcp(ls *loopState, localAddr, remoteAddr string) error {
 			log.WithError(err).Fatal("Failed to re-marshal response")
 		}
 		fmt.Println("RESPONSE=", string(j))
+
+		mtuPair.End, err = utils.ConnMTU(conn.(utils.HasSyscallConn))
+		if err != nil {
+			log.WithError(err).Error("Failed to read connection MTU")
+		}
+
+		mtu, err := json.Marshal(mtuPair)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to re-marshal MTU")
+		}
+		fmt.Println("MTU=", string(mtu))
+
 		if !ls.Next() {
 			break
 		}

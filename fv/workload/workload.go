@@ -235,14 +235,14 @@ func (w *Workload) SourceIPs() []string {
 	return []string{w.IP}
 }
 
-func (w *Workload) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+func (w *Workload) CanConnectTo(ip, port, protocol string) *connectivity.Result {
 	anyPort := Port{
 		Workload: w,
 	}
 	return anyPort.CanConnectTo(ip, port, protocol)
 }
 
-func (w *Workload) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+func (w *Workload) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Result {
 	anyPort := Port{
 		Workload: w,
 	}
@@ -489,7 +489,7 @@ type SpoofedWorkload struct {
 	SpoofedSourceIP string
 }
 
-func (s *SpoofedWorkload) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+func (s *SpoofedWorkload) CanConnectTo(ip, port, protocol string) *connectivity.Result {
 	return canConnectTo(s.Workload, ip, port, s.SpoofedSourceIP, "", protocol, 0, 0)
 }
 
@@ -509,18 +509,18 @@ func (p *Port) SourceIPs() []string {
 	return []string{p.IP}
 }
 
-func (p *Port) CanConnectTo(ip, port, protocol string) *connectivity.Response {
+func (p *Port) CanConnectTo(ip, port, protocol string) *connectivity.Result {
 	srcPort := strconv.Itoa(int(p.Port))
 	return canConnectTo(p.Workload, ip, port, "", srcPort, protocol, 0, 0)
 }
 
-func (p *Port) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Response {
+func (p *Port) CanTransferData(ip, port, protocol string, sendLen, recvLen int) *connectivity.Result {
 	srcPort := strconv.Itoa(int(p.Port))
 	return canConnectTo(p.Workload, ip, port, "", srcPort, protocol, sendLen, recvLen)
 }
 
 func canConnectTo(w *Workload, ip, port, srcIp, srcPort, protocol string,
-	sendLen, recvLen int) *connectivity.Response {
+	sendLen, recvLen int) *connectivity.Result {
 
 	if protocol == "udp" || protocol == "sctp" {
 		// If this is a retry then we may have stale conntrack entries and we don't want those

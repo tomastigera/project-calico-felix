@@ -104,10 +104,10 @@ func (c *Checker) ResetExpectations() {
 // ActualConnectivity calculates the current connectivity for all the expected paths.  It returns a
 // slice containing one response for each attempted check (or nil if the check failed) along with
 // a same-length slice containing a pretty-printed description of the check and its result.
-func (c *Checker) ActualConnectivity() ([]*Response, []string) {
+func (c *Checker) ActualConnectivity() ([]*Result, []string) {
 	UnactivatedCheckers.Discard(c)
 	var wg sync.WaitGroup
-	responses := make([]*Response, len(c.expectations))
+	results := make([]*Result, len(c.expectations))
 	pretty := make([]string, len(c.expectations))
 	for i, exp := range c.expectations {
 		wg.Add(1)
@@ -119,21 +119,21 @@ func (c *Checker) ActualConnectivity() ([]*Response, []string) {
 				p = c.Protocol
 			}
 			if exp.sendLen > 0 || exp.recvLen > 0 {
-				responses[i] = exp.From.(TransferSource).
+				results[i] = exp.From.(TransferSource).
 					CanTransferData(exp.To.IP, exp.To.Port, p, exp.sendLen, exp.recvLen)
 			} else {
-				responses[i] = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
+				results[i] = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
 			}
-			pretty[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, responses[i] != nil)
-			if c.CheckSNAT && responses[i] != nil {
-				srcIP := strings.Split(responses[i].SourceAddr, ":")[0]
+			pretty[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, results[i] != nil)
+			if c.CheckSNAT && results[i] != nil {
+				srcIP := strings.Split(results[i].Response().SourceAddr, ":")[0]
 				pretty[i] += " (from " + srcIP + ")"
 			}
 		}(i, exp)
 	}
 	wg.Wait()
-	log.Debug("Connectivity", responses)
-	return responses, pretty
+	log.Debug("Connectivity", results)
+	return results, pretty
 }
 
 // ExpectedConnectivityPretty returns one string per recorded expectation in order, encoding the expected
@@ -177,7 +177,7 @@ func (c *Checker) CheckConnectivityWithTimeoutOffset(callerSkip int, timeout tim
 	// do at least one retry before we time out.  That covers the case where the first
 	// connectivity check takes longer than the timeout.
 	completedAttempts := 0
-	var actualConn []*Response
+	var actualConn []*Result
 	var actualConnPretty []string
 	for time.Since(start) < timeout || completedAttempts < 2 {
 		actualConn, actualConnPretty = c.ActualConnectivity()
@@ -234,8 +234,33 @@ type Response struct {
 	Request Request
 }
 
-func (r Response) SourceIP() string {
+func (r *Response) SourceIP() string {
 	return strings.Split(r.SourceAddr, ":")[0]
+}
+
+// Result of the Check()
+type Result struct {
+	response  *Response
+	clientMTU MTUPair
+}
+
+// Response returns the server response associated with the result
+func (r *Result) Response() *Response {
+	return r.response
+}
+
+// ClientMTU returns a pair of MTU values of the connection, one recorded before
+// any data were transfered and one after all data were transfered. If the two
+// values are not the same, the MTU of the connection was adjusted due to path
+// MTU discovery.
+func (r *Result) ClientMTU() (int, int) {
+	return r.clientMTU.Start, r.clientMTU.End
+}
+
+// MTUPair is a pair of MTU value recorded before and after data were transfered
+type MTUPair struct {
+	Start int
+	End   int
 }
 
 type ConnectionTarget interface {
@@ -266,7 +291,7 @@ type Matcher struct {
 }
 
 type ConnectionSource interface {
-	CanConnectTo(ip, port, protocol string) *Response
+	CanConnectTo(ip, port, protocol string) *Result
 	SourceName() string
 	SourceIPs() []string
 }
@@ -274,7 +299,7 @@ type ConnectionSource interface {
 // TransferSource can connect and also can transfer data to/from
 type TransferSource interface {
 	ConnectionSource
-	CanTransferData(ip, port, protocol string, sendLen, recvLen int) *Response
+	CanTransferData(ip, port, protocol string, sendLen, recvLen int) *Result
 }
 
 func (m *Matcher) Match(actual interface{}) (success bool, err error) {
@@ -324,7 +349,12 @@ type Expectation struct {
 	recvLen int
 }
 
-func (e Expectation) Matches(response *Response, checkSNAT bool) bool {
+func (e Expectation) Matches(res *Result, checkSNAT bool) bool {
+	if res == nil {
+		return false
+	}
+
+	response := res.Response()
 	if e.Expected {
 		if response == nil {
 			return false
@@ -368,7 +398,7 @@ type CheckCmd struct {
 const BinaryName = "test-connection"
 
 // Run executes the check command
-func (cmd *CheckCmd) run(cName string, logMsg string) *Response {
+func (cmd *CheckCmd) run(cName string, logMsg string) *Result {
 	// Ensure that the container has the 'test-connection' binary.
 	logCxt := log.WithField("container", cName)
 	logCxt.Debugf("Entering connectivity.Check(%v,%v,%v,%v,%v)",
@@ -428,17 +458,39 @@ func (cmd *CheckCmd) run(cName string, logMsg string) *Response {
 		return nil
 	}
 
+	res := &Result{
+		response: &Response{},
+	}
+
 	r := regexp.MustCompile(`RESPONSE=(.*)\n`)
 	m := r.FindSubmatch(wOut)
-	if len(m) > 0 {
-		var resp Response
-		err := json.Unmarshal(m[1], &resp)
-		if err != nil {
-			logCxt.WithError(err).WithField("output", string(wOut)).Panic("Failed to parse connection check response")
-		}
-		return &resp
+	if len(m) == 0 {
+		logCxt.WithField("output", string(wOut)).Panic("Missing response")
+		return nil
 	}
-	return nil
+
+	err = json.Unmarshal(m[1], res.response)
+	if err != nil {
+		logCxt.WithError(err).WithField("output", string(wOut)).
+			Panic("Failed to parse connection check response")
+		return nil
+	}
+
+	r = regexp.MustCompile(`MTU=(.*)\n`)
+	m = r.FindSubmatch(wOut)
+	if len(m) == 0 {
+		logCxt.WithField("output", string(wOut)).Panic("Missing MTU")
+		return nil
+	}
+
+	err = json.Unmarshal(m[1], &res.clientMTU)
+	if err != nil {
+		logCxt.WithError(err).WithField("output", string(wOut)).
+			Panic("Failed to parse client MTU")
+		return nil
+	}
+
+	return res
 }
 
 // WithSourceIP tell the check what source IP to use
@@ -456,7 +508,7 @@ func WithSourcePort(port string) CheckOption {
 }
 
 // Check executes the connectivity check
-func Check(cName, logMsg, ip, port, protocol string, sendLen, recvLen int, opts ...CheckOption) *Response {
+func Check(cName, logMsg, ip, port, protocol string, sendLen, recvLen int, opts ...CheckOption) *Result {
 
 	cmd := CheckCmd{
 		ip:       ip,
