@@ -66,8 +66,8 @@ func (c *Checker) ExpectNone(from ConnectionSource, to ConnectionTarget, explici
 // ExpectDataTransfer check if sendLen can be send to the dest and whether
 // recvLen of data can be received from the dest reliably
 func (c *Checker) ExpectDataTransfer(from TransferSource, to ConnectionTarget,
-	ports []uint16, sendLen, recvLen int) {
-	c.expect(true, from, to, ports, ExpectWithSendLen(sendLen), ExpectWithRecvLen(recvLen))
+	ports []uint16, opts ...ExpectationOption) {
+	c.expect(true, from, to, ports, opts...)
 }
 
 func (c *Checker) expect(connectivity bool, from ConnectionSource, to ConnectionTarget,
@@ -118,17 +118,23 @@ func (c *Checker) ActualConnectivity() ([]*Result, []string) {
 			if c.Protocol != "" {
 				p = c.Protocol
 			}
+
+			var res *Result
 			if exp.sendLen > 0 || exp.recvLen > 0 {
-				results[i] = exp.From.(TransferSource).
+				res = exp.From.(TransferSource).
 					CanTransferData(exp.To.IP, exp.To.Port, p, exp.sendLen, exp.recvLen)
 			} else {
-				results[i] = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
+				res = exp.From.CanConnectTo(exp.To.IP, exp.To.Port, p)
 			}
-			pretty[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, results[i] != nil)
-			if c.CheckSNAT && results[i] != nil {
-				srcIP := strings.Split(results[i].Response().SourceAddr, ":")[0]
-				pretty[i] += " (from " + srcIP + ")"
+			pretty[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, res != nil)
+			if res != nil {
+				if c.CheckSNAT {
+					srcIP := strings.Split(res.Response().SourceAddr, ":")[0]
+					pretty[i] += " (from " + srcIP + ")"
+				}
+				pretty[i] += fmt.Sprintf(" client MTU %d -> %d", res.clientMTU.Start, res.clientMTU.Start)
 			}
+			results[i] = res
 		}(i, exp)
 	}
 	wg.Wait()
@@ -142,8 +148,13 @@ func (c *Checker) ExpectedConnectivityPretty() []string {
 	result := make([]string, len(c.expectations))
 	for i, exp := range c.expectations {
 		result[i] = fmt.Sprintf("%s -> %s = %v", exp.From.SourceName(), exp.To.TargetName, exp.Expected)
-		if c.CheckSNAT && exp.Expected {
-			result[i] += " (from " + strings.Join(exp.ExpSrcIPs, "|") + ")"
+		if exp.Expected {
+			if c.CheckSNAT {
+				result[i] += " (from " + strings.Join(exp.ExpSrcIPs, "|") + ")"
+			}
+			if exp.clientMTUStart != 0 || exp.clientMTUEnd != 0 {
+				result[i] += fmt.Sprintf(" client MTU %d -> %d", exp.clientMTUStart, exp.clientMTUEnd)
+			}
 		}
 	}
 	return result
@@ -249,14 +260,6 @@ func (r *Result) Response() *Response {
 	return r.response
 }
 
-// ClientMTU returns a pair of MTU values of the connection, one recorded before
-// any data were transfered and one after all data were transfered. If the two
-// values are not the same, the MTU of the connection was adjusted due to path
-// MTU discovery.
-func (r *Result) ClientMTU() (int, int) {
-	return r.clientMTU.Start, r.clientMTU.End
-}
-
 // MTUPair is a pair of MTU value recorded before and after data were transfered
 type MTUPair struct {
 	Start int
@@ -327,15 +330,28 @@ func ExpectWithSrcIPs(ips ...string) ExpectationOption {
 	}
 }
 
+// ExpectWithSendLen asserts how much additional data on top of the original
+// requests should be sent with success
 func ExpectWithSendLen(l int) ExpectationOption {
 	return func(e *Expectation) {
 		e.sendLen = l
 	}
 }
 
+// ExpectWithRecvLen asserts how much additional data on top of the original
+// response should be received with success
 func ExpectWithRecvLen(l int) ExpectationOption {
 	return func(e *Expectation) {
 		e.recvLen = l
+	}
+}
+
+// ExpectWithClientAdjustedMTU asserts that the connection MTU should change
+// during the transfer
+func ExpectWithClientAdjustedMTU(from, to int) ExpectationOption {
+	return func(e *Expectation) {
+		e.clientMTUStart = from
+		e.clientMTUEnd = to
 	}
 }
 
@@ -347,6 +363,9 @@ type Expectation struct {
 
 	sendLen int
 	recvLen int
+
+	clientMTUStart int
+	clientMTUEnd   int
 }
 
 func (e Expectation) Matches(res *Result, checkSNAT bool) bool {
@@ -360,11 +379,22 @@ func (e Expectation) Matches(res *Result, checkSNAT bool) bool {
 			return false
 		}
 		if checkSNAT {
+			match := false
 			for _, src := range e.ExpSrcIPs {
 				if src == response.SourceIP() {
-					return true
+					match = true
+					break
 				}
 			}
+			if !match {
+				return false
+			}
+		}
+
+		if e.clientMTUStart != 0 && e.clientMTUStart != res.clientMTU.Start {
+			return false
+		}
+		if e.clientMTUEnd != 0 && e.clientMTUEnd != res.clientMTU.End {
 			return false
 		}
 	} else {
