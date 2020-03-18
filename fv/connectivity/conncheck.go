@@ -110,6 +110,10 @@ func (c *Checker) ActualConnectivity() ([]*Result, []string) {
 	results := make([]*Result, len(c.expectations))
 	pretty := make([]string, len(c.expectations))
 	for i, exp := range c.expectations {
+		if exp.skip {
+			log.WithField("exp", exp).Info("SKIP")
+			continue
+		}
 		wg.Add(1)
 		go func(i int, exp Expectation) {
 			defer ginkgo.GinkgoRecover()
@@ -192,19 +196,30 @@ func (c *Checker) CheckConnectivityWithTimeoutOffset(callerSkip int, timeout tim
 	var actualConnPretty []string
 	for time.Since(start) < timeout || completedAttempts < 2 {
 		actualConn, actualConnPretty = c.ActualConnectivity()
-		failed := false
+		success := true
 		expConnectivity = c.ExpectedConnectivityPretty()
 		for i := range c.expectations {
-			exp := c.expectations[i]
+			exp := &c.expectations[i]
+
+			if exp.skip {
+				continue
+			}
+
 			act := actualConn[i]
+			log.WithField("exp", exp).Info("exp TEST")
+			log.WithField("act", act).Info("act RESULT")
 			if !exp.Matches(act, c.CheckSNAT) {
-				failed = true
+				log.WithField("exp", exp).Info("exp FAIL")
+				success = false
 				actualConnPretty[i] += " <---- WRONG"
 				expConnectivity[i] += " <---- EXPECTED"
+			} else if exp.Expected {
+				// we have a success, no need to try again
+				log.WithField("exp", exp).Info("mark SKIP")
+				exp.skip = true
 			}
 		}
-		if !failed {
-			// Success!
+		if success {
 			return
 		}
 		completedAttempts++
@@ -366,9 +381,12 @@ type Expectation struct {
 
 	clientMTUStart int
 	clientMTUEnd   int
+
+	// internal use
+	skip bool
 }
 
-func (e Expectation) Matches(res *Result, checkSNAT bool) bool {
+func (e *Expectation) Matches(res *Result, checkSNAT bool) bool {
 	if res == nil {
 		return false
 	}

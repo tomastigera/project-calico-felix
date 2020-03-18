@@ -1072,7 +1072,7 @@ func describeBPFTests(opts ...bpfTestOpt) bool {
 									cc.ExpectDataTransfer(externalClient, TargetIP(felixes[1].IP), port,
 										ExpectWithSendLen(1500),
 										ExpectWithRecvLen(1360),
-										ExpectWithClientAdjustedMTU(1500, 1411),
+										ExpectWithClientAdjustedMTU(1500, 1410),
 									)
 									cc.CheckConnectivity()
 								})
