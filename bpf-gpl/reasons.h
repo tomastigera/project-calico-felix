@@ -34,6 +34,7 @@ enum calico_reason {
 	CALI_REASON_DECAP_FAIL = 0xdf,
 	CALI_REASON_ICMP_DF = 0x1c,
 	CALI_REASON_RT_UNKNOWN = 0xdead,
+	CALI_REASON_RPF_FAILED = 0x47f,
 };
 
 #endif /* __CALI_REASONS_H__ */

@@ -50,6 +50,12 @@
 
 #ifdef CALI_DEBUG_ALLOW_ALL
 
+/* Strict RPF for the tunnel is not necessary on a single NIC host. We enable it
+ * by default, but we may consider to opt in only if we actually have multiple
+ * NIC as it requires an extra routing map lookup.
+ */
+#define TUNNEl_STRICT_RPF
+
 /* If we want to just compile the code without defining any policies and to
  * avoid compiling out code paths that are not reachable if traffic is denied,
  * we can compile it with allow all
@@ -431,12 +437,26 @@ static CALI_BPF_INLINE int calico_tc(struct __sk_buff *skb)
 	if (dnat_should_decap() && is_vxlan_tunnel(ip_header)) {
 		struct udphdr *udp_header = (void*)(ip_header+1);
 		/* decap on host ep only if directly for the node */
-		CALI_DEBUG("VXLAN tunnel packet to %x (host IP=%x)\n", ip_header->daddr, HOST_IP);
+		CALI_DEBUG("VXLAN tunnel packet to %x (host IP=%x)\n",
+				be32_to_host(ip_header->daddr), HOST_IP);
 		if (ip_header->daddr == HOST_IP &&
 				vxlan_udp_csum_ok(udp_header) &&
 				vxlan_size_ok(skb, udp_header) &&
 				vxlan_vni_is_valid(skb, udp_header) &&
 				vxlan_vni(skb, udp_header) == CALI_VXLAN_VNI) {
+#ifdef TUNNEl_STRICT_RPF
+			struct cali_rt *rt = cali_rt_lookup(ip_header->daddr);
+			if (!rt || !cali_rt_is_host(rt) || !cali_rt_is_local(rt)) {
+				fwd.reason = CALI_REASON_RT_UNKNOWN;
+				CALI_DEBUG("Tunnel decap - no route to local host %d");
+				goto deny;
+			}
+			if (rt->if_index != skb->ifindex) {
+				fwd.reason = CALI_REASON_RPF_FAILED;
+				CALI_DEBUG("Tunnel decap - received on unexpected iface %d\n", skb->ifindex);
+				goto deny;
+			}
+#endif /* TUNNEl_STRICT_RPF */
 			state.nat_tun_src = ip_header->saddr;
 			CALI_DEBUG("vxlan decap\n");
 			if (vxlan_v4_decap(skb)) {
