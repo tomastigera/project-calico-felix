@@ -229,8 +229,14 @@ func (p *Builder) writeRules(rules Rules) {
 			p.writePolicy(pol, polIdx, endOfTierLabel)
 		}
 
-		log.Debugf("End of policies drop")
-		p.writeRule(&proto.Rule{Action: "deny"}, endOfTierLabel)
+		action := "deny"
+		// Empty tier has no impact
+		if len(tier.Policies) == 0 {
+			action = "pass"
+		}
+
+		log.Debugf("End of policies %s", action)
+		p.writeRule(&proto.Rule{Action: action}, endOfTierLabel)
 
 		p.b.LabelNextInsn(endOfTierLabel)
 	}

@@ -223,14 +223,14 @@ var polProgramTests = []polProgramTest{
 			icmpPkt("10.0.0.1", "10.0.0.2")},
 	},
 	{
-		PolicyName: "unreachable tier",
+		PolicyName: "empty tier has no impact",
 		Policy: polprog.Rules{
 			Tiers: []polprog.Tier{
 				{
 					Name: "empty tier",
 				},
 				{
-					Name: "unreachable",
+					Name: "allow",
 					Policies: []polprog.Policy{{
 						Name: "allow all",
 						Rules: []*proto.Rule{{
@@ -240,7 +240,36 @@ var polProgramTests = []polProgramTest{
 				},
 			},
 		},
-		DroppedPackets: []packet{
+		AllowedPackets: []packet{
+			tcpPkt("10.0.0.1:31245", "10.0.0.2:80"),
+			tcpPkt("10.0.0.2:80", "10.0.0.1:31245"),
+			icmpPkt("10.0.0.1", "10.0.0.2")},
+	},
+	{
+		PolicyName: "unreachable tier",
+		Policy: polprog.Rules{
+			Tiers: []polprog.Tier{
+				{
+					Name: "allow all",
+					Policies: []polprog.Policy{{
+						Name: "allow all",
+						Rules: []*proto.Rule{{
+							Action: "Allow",
+						}},
+					}},
+				},
+				{
+					Name: "unreachable",
+					Policies: []polprog.Policy{{
+						Name: "deny all",
+						Rules: []*proto.Rule{{
+							Action: "Deny",
+						}},
+					}},
+				},
+			},
+		},
+		AllowedPackets: []packet{
 			tcpPkt("10.0.0.1:31245", "10.0.0.2:80"),
 			tcpPkt("10.0.0.2:80", "10.0.0.1:31245"),
 			icmpPkt("10.0.0.1", "10.0.0.2")},
